@@ -145,4 +145,12 @@ class MoozikPlayer(context: Context) {
             engineHandle = 0L
         }
     }
+
+    /** Live-EQ hookup: UI mutations push straight into the active engine. */
+    fun attachEq(controller: EqController) {
+        controller.onEqChanged = {
+            val handle = engineHandle
+            if (handle != 0L) controller.applyTo(handle, _state.value.sampleRate)
+        }
+    }
 }

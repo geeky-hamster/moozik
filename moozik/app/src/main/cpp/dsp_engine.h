@@ -10,7 +10,7 @@ namespace moozik {
 // processInterleaved() is allocation-free and real-time safe.
 class DspEngine {
 public:
-    static constexpr int kMaxBands = 32;
+    static constexpr int kMaxBands = 48;
     static constexpr int kChannels = 2;
 
     explicit DspEngine(int sampleRate);

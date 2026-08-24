@@ -9,6 +9,9 @@ object Dsp {
     const val FILTER_LOWSHELF = 1
     const val FILTER_HIGHSHELF = 2
 
+    /** Mirrors native DspEngine::kMaxBands. */
+    const val BAND_COUNT = 48
+
     external fun version(): String
 
     /** Returns [b0, b1, b2, a1, a2] of an RBJ peaking filter. */
