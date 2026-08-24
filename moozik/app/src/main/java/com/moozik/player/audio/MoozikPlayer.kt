@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+enum class RepeatMode { OFF, ALL, ONE }
+
 /**
  * Queue-based playback orchestrator running entirely on an IO dispatcher:
  * MediaCodec decode -> lock-free ring -> native DSP -> AAudio output.
@@ -38,11 +40,14 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         val artist: String = "",
         val album: String = "",
         val artUri: String? = null,
+        val artBitmap: android.graphics.Bitmap? = null,
         val currentUri: String? = null,
         val sampleRate: Int = 0,
         val durationMs: Long = 0L,
         val queueIndex: Int = -1,
         val queueSize: Int = 0,
+        val repeat: RepeatMode = RepeatMode.OFF,
+        val shuffled: Boolean = false,
         val error: String? = null,
     )
 
@@ -51,6 +56,17 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
 
+    private var queue: List<PlayerTrack> = emptyList()
+    private var job: Job? = null
+    private val generation = AtomicLong(0)
+    private val pendingSeekUs = AtomicLong(-1L)
+
+    @Volatile private var paused = false
+    @Volatile private var positionMs = 0L
+    @Volatile private var engineHandle = 0L
+
+    fun positionMs(): Long = positionMs
+
     // ---- audio focus & device-change handling ----
     private val audioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -58,8 +74,6 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         .setUsage(AudioAttributes.USAGE_MEDIA)
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
-
-    @Volatile private var resumeAfterFocusGain = false
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
@@ -92,7 +106,6 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
 
     private val becomingNoisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            // Headphones unplugged: pause instead of blasting the speaker.
             pauseForFocus()
             resumeAfterFocusLoss = false
         }
@@ -123,16 +136,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         resumeAfterFocusLoss = false
     }
 
-    private var queue: List<PlayerTrack> = emptyList()
-    private var job: Job? = null
-    private val generation = AtomicLong(0)
-    private val pendingSeekUs = AtomicLong(-1L)
-
-    @Volatile private var paused = false
-    @Volatile private var positionMs = 0L
-    @Volatile private var engineHandle = 0L
-
-    fun positionMs(): Long = positionMs
+    // ---- queue control ----
 
     fun playQueue(tracks: List<PlayerTrack>, startIndex: Int) {
         if (tracks.isEmpty()) return
@@ -141,7 +145,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
 
         abandonFocus()
         if (!requestFocus()) {
-            _state.value = PlayerState(error = "audio focus unavailable")
+            _state.value = _state.value.copy(error = "audio focus unavailable")
             return
         }
 
@@ -161,7 +165,8 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                     _state.update {
                         it.copy(
                             status = Status.PREPARING, title = track.title,
-                            artist = track.artist, album = track.album, artUri = track.artUri,
+                            artist = track.artist, album = track.album,
+                            artUri = track.artUri, artBitmap = ArtCache.get(track.uri),
                             currentUri = track.uri,
                             queueIndex = idx, queueSize = tracks.size, error = null,
                         )
@@ -170,15 +175,21 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                     val d = MediaDecoder(appContext).also { decoder = it }
                     val info = d.open(Uri.parse(track.uri))
 
+                    // Authoritative metadata straight from the file.
+                    enrichMetadata(track)
+
                     engineHandle = Dsp.createEngine(info.sampleRate)
-                    check(Dsp.openOutput(engineHandle, info.sampleRate)) { "could not open audio output" }
+                    check(Dsp.openOutput(engineHandle, info.sampleRate)) {
+                        "could not open audio output"
+                    }
                     eq?.applyTo(engineHandle, info.sampleRate)
 
                     _state.update {
                         it.copy(
                             status = Status.PLAYING,
                             sampleRate = info.sampleRate,
-                            durationMs = (info.durationUs / 1000).takeIf { us -> us > 0 }
+                            durationMs = it.durationMs.takeIf { ms -> ms > 0 }
+                                ?: (info.durationUs / 1000).takeIf { us -> us > 0 }
                                 ?: track.durationMs,
                         )
                     }
@@ -194,10 +205,15 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                     if (!isActive || generation.get() != myGen) break
                     if (!eos) break
 
-                    // Natural end -> advance to the next track.
+                    // Natural end -> apply repeat policy, then advance.
                     stopAudio()
                     positionMs = 0
-                    idx++
+                    idx = when (_state.value.repeat) {
+                        RepeatMode.ONE -> idx
+                        RepeatMode.ALL -> (idx + 1) % tracks.size
+                        RepeatMode.OFF -> idx + 1
+                    }
+                    if (_state.value.repeat == RepeatMode.OFF && idx >= tracks.size) break
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
@@ -217,7 +233,42 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         }
     }
 
+    /** Pulls file-level tags + embedded art, overriding MediaStore guesses. */
+    private fun enrichMetadata(track: PlayerTrack) {
+        val meta = MetadataReader.read(appContext, Uri.parse(track.uri))
+        meta.art?.let { ArtCache.put(track.uri, it) }
+        _state.update {
+            it.copy(
+                title = meta.title?.takeIf { t -> t.isNotBlank() } ?: track.title,
+                artist = meta.artist?.takeIf { a -> a.isNotBlank() } ?: track.artist,
+                album = meta.album?.takeIf { a -> a.isNotBlank() } ?: track.album,
+                artBitmap = ArtCache.get(track.uri),
+                durationMs = if (meta.durationMs > 0) meta.durationMs / 1000
+                else it.durationMs,
+            )
+        }
+    }
+
     fun playSingle(track: PlayerTrack) = playQueue(listOf(track), 0)
+
+    fun playAt(index: Int) {
+        if (index in queue.indices) playQueue(queue, index)
+    }
+
+    fun queueSnapshot(): List<PlayerTrack> = queue
+
+    fun setRepeat(mode: RepeatMode) {
+        _state.update { it.copy(repeat = mode) }
+    }
+
+    /** Shuffles everything after the current track; playback continues. */
+    fun shuffle() {
+        val cur = _state.value.queueIndex
+        if (cur !in queue.indices) return
+        val current = queue[cur]
+        queue = listOf(current) + queue.filterIndexed { i, _ -> i != cur }.shuffled()
+        _state.update { it.copy(queueIndex = 0, queueSize = queue.size, shuffled = true) }
+    }
 
     fun togglePause() {
         when (_state.value.status) {
@@ -243,16 +294,25 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
     }
 
     fun next() {
+        if (queue.isEmpty()) return
         val n = _state.value.queueIndex + 1
-        if (n in queue.indices) playQueue(queue, n)
+        when {
+            n < queue.size -> playQueue(queue, n)
+            _state.value.repeat == RepeatMode.ALL -> playQueue(queue, 0)
+        }
     }
 
     fun previous() {
+        if (queue.isEmpty()) return
         if (positionMs > 3000) {
             seekTo(0)
         } else {
             val p = _state.value.queueIndex - 1
-            if (p in queue.indices) playQueue(queue, p) else seekTo(0)
+            when {
+                p >= 0 -> playQueue(queue, p)
+                _state.value.repeat == RepeatMode.ALL -> playQueue(queue, queue.lastIndex)
+                else -> seekTo(0)
+            }
         }
     }
 

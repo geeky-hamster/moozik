@@ -7,6 +7,7 @@
 
 #define LOG_TAG "MoozikAudio"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace moozik {
@@ -42,22 +43,28 @@ bool AudioOutput::open(DspEngine* engine, int sampleRate) {
     dsp_ = engine;
     ring_.resetAbort();
 
-    // Attempt 1: exclusive (MMAP where available) bypasses the system mixer.
-    if (openWithMode(engine, sampleRate, AAUDIO_SHARING_MODE_EXCLUSIVE)) {
-        exclusive_ = true;
-        LOGI("stream opened EXCLUSIVE: %d Hz, burst=%d",
-             AAudioStream_getSampleRate(stream_), AAudioStream_getFramesPerBurst(stream_));
-        return true;
-    }
+    // Fallback chain: bit-perfect first, guaranteed-sound last.
+    // 1) exclusive (mixer bypass) at the native rate
+    // 2) shared float at the native rate
+    // 3) shared float at 48 kHz (device default; mixer resamples)
+    struct Attempt { aaudio_sharing_mode_t mode; int rate; bool native; };
+    const Attempt attempts[] = {
+        {AAUDIO_SHARING_MODE_EXCLUSIVE, sampleRate, true},
+        {AAUDIO_SHARING_MODE_SHARED, sampleRate, true},
+        {AAUDIO_SHARING_MODE_SHARED, 48000, false},
+    };
 
-    // Attempt 2: shared mode — works everywhere.
-    if (openWithMode(engine, sampleRate, AAUDIO_SHARING_MODE_SHARED)) {
-        exclusive_ = false;
-        LOGI("stream opened SHARED: %d Hz, burst=%d",
-             AAudioStream_getSampleRate(stream_), AAudioStream_getFramesPerBurst(stream_));
-        return true;
+    for (const auto& a : attempts) {
+        if (openWithMode(engine, a.rate, a.mode)) {
+            exclusive_ = (a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE);
+            nativeRate_ = a.native;
+            LOGI("opened %s %d Hz (native=%d, requested=%d)",
+                 exclusive_ ? "EXCLUSIVE" : "SHARED",
+                 AAudioStream_getSampleRate(stream_), a.native, sampleRate);
+            return true;
+        }
+        LOGW("open failed: mode=%s rate=%d", a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE ? "excl" : "shared", a.rate);
     }
-
     return false;
 }
 

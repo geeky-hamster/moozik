@@ -19,8 +19,10 @@ native sample rate, never resampled by Moozik itself.
   exactly what [AutoEq](https://github.com/jaakkopasanen/AutoEq) exports).
   PK/LSC/HSC filters + preamp line are parsed and applied live.
 - **10-band graphic EQ** with a real-time frequency-response curve preview.
-- **Local library** via MediaStore: artist/album/title browsing, queue-based
-  playback with next/previous, auto-advance, seek.
+- **Local library** via MediaStore: search, sort, queue-based playback with
+  auto-advance, **shuffle**, **repeat (off/all/one)**, seek, Up Next view.
+- **Authoritative metadata** — Now Playing pulls tags, exact duration and
+  embedded cover art straight from the file, overriding stale MediaStore data.
 - **Background playback** — foreground service + MediaSession media
   notification (headset/lockscreen controls).
 - Formats: anything the platform decodes — FLAC, WAV, MP3, AAC, OGG Vorbis,

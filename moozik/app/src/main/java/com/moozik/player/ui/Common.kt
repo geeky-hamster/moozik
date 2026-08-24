@@ -1,8 +1,10 @@
 package com.moozik.player.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.MediaStore
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +23,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.moozik.player.audio.MoozikPlayer
@@ -140,6 +143,47 @@ fun ArtworkLarge(artUri: String?, modifier: Modifier = Modifier) {
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
             )
+        }
+    }
+}
+
+/** Embedded-art-first artwork: prefers the decoded bitmap, falls back to URI. */
+@Composable
+fun ArtworkRich(
+    artUri: String?,
+    artBitmap: android.graphics.Bitmap?,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            artBitmap != null -> {
+                androidx.compose.foundation.Image(
+                    bitmap = artBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            artUri != null -> {
+                AsyncImage(
+                    model = artUri,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            else -> {
+                Icon(
+                    imageVector = Icons.Rounded.MusicNote,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(72.dp),
+                )
+            }
         }
     }
 }

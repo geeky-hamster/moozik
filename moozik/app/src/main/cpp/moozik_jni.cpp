@@ -131,10 +131,13 @@ JNIEXPORT void JNI_METHOD(writeOutput)(
     jsize length = env->GetArrayLength(interleaved);
     if (frames * 2 > length) return;
 
-    auto* data = static_cast<jfloat*>(env->GetPrimitiveArrayCritical(interleaved, nullptr));
+    // Get<Float>ArrayElements (not PrimitiveArrayCritical): the write below
+    // may block on the ring buffer, and blocking inside a critical section
+    // stalls the GC. Elements-pinning is safe for the duration.
+    jfloat* data = env->GetFloatArrayElements(interleaved, nullptr);
     if (data) {
         g_output->write(data, static_cast<size_t>(frames) * 2);
-        env->ReleasePrimitiveArrayCritical(interleaved, data, JNI_ABORT);
+        env->ReleaseFloatArrayElements(interleaved, data, JNI_ABORT);
     }
 }
 
@@ -143,8 +146,9 @@ JNIEXPORT jstring JNI_METHOD(outputInfo)(JNIEnv* env, jobject /*thiz*/) {
         return env->NewStringUTF("");
     }
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "%s · %d Hz",
-                  g_output->modeText(), g_output->actualSampleRate());
+    std::snprintf(buf, sizeof(buf), "%s · %d Hz%s",
+                  g_output->modeText(), g_output->actualSampleRate(),
+                  g_output->isNativeRate() ? "" : " · resampled");
     return env->NewStringUTF(buf);
 }
 

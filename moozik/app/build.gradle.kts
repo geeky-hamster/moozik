@@ -12,8 +12,8 @@ android {
         applicationId = "com.moozik.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

@@ -100,6 +100,7 @@ class PlaybackService : Service() {
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, s.artist)
                 .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, s.album)
                 .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, s.durationMs * 1000)
+                .also { b -> s.artBitmap?.let { b.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) } }
                 .build()
         )
         val playing = s.status == MoozikPlayer.Status.PLAYING
@@ -137,6 +138,7 @@ class PlaybackService : Service() {
             .setSmallIcon(R.drawable.ic_notif)
             .setContentTitle(s.title.ifEmpty { "Moozik" })
             .setContentText(if (s.artist.isEmpty()) "ready" else "${s.artist} · ${s.album}")
+            .setLargeIcon(s.artBitmap)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this, 0,

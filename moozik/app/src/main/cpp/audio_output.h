@@ -27,6 +27,7 @@ public:
 
     int32_t framesPerBurst() const;
     int actualSampleRate() const;
+    bool isNativeRate() const { return nativeRate_; }
     const char* modeText() const { return exclusive_ ? "exclusive" : "shared"; }
 
 private:
@@ -44,6 +45,7 @@ private:
     AAudioStream* stream_{nullptr};
     std::atomic<bool> paused_{false};
     bool exclusive_{false};
+    bool nativeRate_{true};
 };
 
 } // namespace moozik

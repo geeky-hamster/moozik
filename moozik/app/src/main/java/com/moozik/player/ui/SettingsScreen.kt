@@ -99,7 +99,7 @@ fun SettingsScreen(
                     Text("About", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Moozik 1.1.0 — a minimalist HiFi player.\n" +
+                        "Moozik 1.2.0 — a minimalist HiFi player.\n" +
                             "Kotlin · Compose · C++ DSP · AAudio",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
