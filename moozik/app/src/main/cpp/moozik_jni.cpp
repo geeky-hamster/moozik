@@ -152,4 +152,8 @@ JNIEXPORT jstring JNI_METHOD(outputInfo)(JNIEnv* env, jobject /*thiz*/) {
     return env->NewStringUTF(buf);
 }
 
+JNIEXPORT void JNI_METHOD(setExclusiveEnabled)(JNIEnv* /*env*/, jobject /*thiz*/, jboolean enabled) {
+    AudioOutput::setExclusiveAllowed(enabled == JNI_TRUE);
+}
+
 } // extern "C"

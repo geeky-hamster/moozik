@@ -6,9 +6,12 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicLong
+
+private const val TAG = "MoozikDecode"
 
 data class TrackInfo(
     val sampleRate: Int,
@@ -58,6 +61,11 @@ class MediaDecoder(context: Context) {
             configure(format, null, null, 0)
             start()
         }
+        Log.i(
+            TAG,
+            "decoder ready: mime=$mime rate=${format.getInteger(MediaFormat.KEY_SAMPLE_RATE)} " +
+                "ch=${format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}",
+        )
 
         return TrackInfo(
             sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE),
@@ -86,6 +94,9 @@ class MediaDecoder(context: Context) {
         var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
         var outChannels = 2
         var sawEos = false
+        var buffersOut = 0L
+        var framesOut = 0L
+        Log.i(TAG, "decode loop enter")
 
         while (!sawEos && isActive()) {
             val seekUs = pendingSeekUs.getAndSet(-1L)
@@ -117,6 +128,7 @@ class MediaDecoder(context: Context) {
                     val f = c.outputFormat
                     pcmEncoding = f.getInteger(MediaFormat.KEY_PCM_ENCODING)
                     outChannels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    Log.i(TAG, "format changed: enc=$pcmEncoding ch=$outChannels")
                 }
                 outIdx >= 0 -> {
                     val ob = checkNotNull(c.getOutputBuffer(outIdx))
@@ -132,13 +144,22 @@ class MediaDecoder(context: Context) {
                             stereoFromShort(ob, frames, outChannels)
                         }
                     }
+                    buffersOut++
+                    framesOut += frames
+                    if (buffersOut == 1L || buffersOut % 200L == 0L) {
+                        Log.i(TAG, "out #$buffersOut frames=$frames total=$framesOut pts=${info.presentationTimeUs} enc=$pcmEncoding")
+                    }
                     if (frames > 0) sink(conv, frames, info.presentationTimeUs)
                     c.releaseOutputBuffer(outIdx, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawEos = true
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        sawEos = true
+                        Log.i(TAG, "EOS after $buffersOut buffers, $framesOut frames")
+                    }
                 }
                 else -> Unit // TRY_AGAIN_LATER: go feed more input
             }
         }
+        Log.i(TAG, "decode loop exit: eos=$sawEos buffers=$buffersOut frames=$framesOut")
         return sawEos
     }
 

@@ -58,4 +58,7 @@ object Dsp {
 
     /** "exclusive · 48000 Hz" style summary of the live output; "" when closed. */
     external fun outputInfo(): String
+
+    /** Opt-in switch for exclusive (mixer-bypassing) output attempts. */
+    external fun setExclusiveEnabled(enabled: Boolean)
 }

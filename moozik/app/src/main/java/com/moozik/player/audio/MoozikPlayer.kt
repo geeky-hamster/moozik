@@ -65,7 +65,16 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
     @Volatile private var positionMs = 0L
     @Volatile private var engineHandle = 0L
 
+    // Frame-counted position: codec PTS is unreliable (WAV reports 0 forever).
+    @Volatile private var posSampleRate = 0
+    @Volatile private var framesSinceSeek = 0L
+    @Volatile private var seekBaseMs = 0L
+
     fun positionMs(): Long = positionMs
+
+    private val audioPrefs by lazy {
+        appContext.getSharedPreferences("moozik_audio", Context.MODE_PRIVATE)
+    }
 
     // ---- audio focus & device-change handling ----
     private val audioManager =
@@ -153,6 +162,8 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         paused = false
         pendingSeekUs.set(-1)
         positionMs = 0
+        framesSinceSeek = 0
+        seekBaseMs = 0
 
         job = scope.launch {
             var idx = startIndex.coerceIn(0, tracks.lastIndex)
@@ -174,14 +185,20 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
 
                     val d = MediaDecoder(appContext).also { decoder = it }
                     val info = d.open(Uri.parse(track.uri))
+                    android.util.Log.i("MoozikPlayer", "opened: mime=${info.mime} rate=${info.sampleRate} ch=${info.channels}")
+                    posSampleRate = info.sampleRate
 
                     // Authoritative metadata straight from the file.
                     enrichMetadata(track)
 
                     engineHandle = Dsp.createEngine(info.sampleRate)
-                    check(Dsp.openOutput(engineHandle, info.sampleRate)) {
-                        "could not open audio output"
-                    }
+                    Dsp.setExclusiveEnabled(audioPrefs.getBoolean("exclusive", false))
+                    val outOk = Dsp.openOutput(engineHandle, info.sampleRate)
+                    android.util.Log.i(
+                        "MoozikPlayer",
+                        "openOutput(${info.sampleRate}Hz)=$outOk info=${Dsp.outputInfo()}",
+                    )
+                    check(outOk) { "could not open audio output" }
                     eq?.applyTo(engineHandle, info.sampleRate)
 
                     _state.update {
@@ -198,7 +215,15 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                         isActive = { isActive && generation.get() == myGen },
                         isPaused = { paused },
                         pendingSeekUs = pendingSeekUs,
-                        sink = { _, _, ptsUs -> positionMs = (ptsUs / 1000).coerceAtLeast(0) },
+                        sink = { buf, frames, _ ->
+                            // THE critical handoff: decoded samples into the native ring.
+                            Dsp.writeOutput(buf, frames)
+                            // Frame-counted position — PTS-free, always truthful.
+                            framesSinceSeek += frames
+                            if (posSampleRate > 0) {
+                                positionMs = seekBaseMs + framesSinceSeek * 1000 / posSampleRate
+                            }
+                        },
                         onDrained = { Dsp.drainOutput() },
                     )
 
@@ -290,7 +315,9 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         val status = _state.value.status
         if (status != Status.PLAYING && status != Status.PAUSED) return
         positionMs = ms.coerceIn(0, _state.value.durationMs)
-        pendingSeekUs.set(ms * 1000)
+        seekBaseMs = positionMs
+        framesSinceSeek = 0
+        pendingSeekUs.set(positionMs * 1000)
     }
 
     fun next() {

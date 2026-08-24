@@ -24,8 +24,11 @@ aaudio_data_callback_result_t AudioOutput::onDataCallback(
     }
 
     const size_t got = self->ring_.read(out, want);
-    if (got > 0 && self->dsp_) {
-        self->dsp_->processInterleaved(out, static_cast<int>(got / 2));
+    if (got > 0) {
+        self->consumedFrames_.fetch_add(got / 2, std::memory_order_relaxed);
+        if (self->dsp_) {
+            self->dsp_->processInterleaved(out, static_cast<int>(got / 2));
+        }
     }
     if (got < want) {
         std::memset(out + got, 0, (want - got) * sizeof(float));
@@ -41,29 +44,62 @@ void AudioOutput::onErrorCallback(
 bool AudioOutput::open(DspEngine* engine, int sampleRate) {
     close();
     dsp_ = engine;
+    requestedRate_ = sampleRate;
     ring_.resetAbort();
+    consumedFrames_.store(0);
 
-    // Fallback chain: bit-perfect first, guaranteed-sound last.
-    // 1) exclusive (mixer bypass) at the native rate
-    // 2) shared float at the native rate
-    // 3) shared float at 48 kHz (device default; mixer resamples)
+    // Fallback chain: guaranteed-sound first, bit-perfect attempt last.
+    // 1) shared float at the native rate (works everywhere, mixer-free on
+    //    devices whose HAL passes it through untouched)
+    // 2) shared float at 48 kHz (device default; mixer resamples)
+    // 3) exclusive (mixer bypass) — opt-in via Settings; some OEM builds
+    //    open but render nothing, so it is never the default path.
     struct Attempt { aaudio_sharing_mode_t mode; int rate; bool native; };
-    const Attempt attempts[] = {
-        {AAUDIO_SHARING_MODE_EXCLUSIVE, sampleRate, true},
+    Attempt attempts[] = {
         {AAUDIO_SHARING_MODE_SHARED, sampleRate, true},
         {AAUDIO_SHARING_MODE_SHARED, 48000, false},
+        {AAUDIO_SHARING_MODE_EXCLUSIVE, sampleRate, true},
     };
 
     for (const auto& a : attempts) {
+        if (a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE && !s_exclusiveAllowed_.load()) continue;
         if (openWithMode(engine, a.rate, a.mode)) {
             exclusive_ = (a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE);
             nativeRate_ = a.native;
+            consumedFrames_.store(0);
             LOGI("opened %s %d Hz (native=%d, requested=%d)",
                  exclusive_ ? "EXCLUSIVE" : "SHARED",
                  AAudioStream_getSampleRate(stream_), a.native, sampleRate);
             return true;
         }
-        LOGW("open failed: mode=%s rate=%d", a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE ? "excl" : "shared", a.rate);
+        LOGW("open failed: mode=%s rate=%d",
+             a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE ? "excl" : "shared", a.rate);
+    }
+    return false;
+}
+
+// Watchdog recovery: the exclusive stream opened and "started" but the
+// hardware never consumes (seen on some ColorOS builds). Reopen in shared.
+bool AudioOutput::recoverShared() {
+    LOGW("exclusive stream not draining - recovering to SHARED");
+    s_exclusiveBroken_.store(true);
+    const bool wasNative = nativeRate_;
+    close();
+    ring_.resetAbort();
+
+    if (openWithMode(dsp_, requestedRate_, AAUDIO_SHARING_MODE_SHARED)) {
+        exclusive_ = false;
+        nativeRate_ = wasNative;
+        consumedFrames_.store(0);
+        LOGI("recovered: SHARED %d Hz", actualSampleRate());
+        return true;
+    }
+    if (openWithMode(dsp_, 48000, AAUDIO_SHARING_MODE_SHARED)) {
+        exclusive_ = false;
+        nativeRate_ = false;
+        consumedFrames_.store(0);
+        LOGI("recovered: SHARED 48000 Hz");
+        return true;
     }
     return false;
 }
@@ -112,11 +148,38 @@ void AudioOutput::close() {
 
 size_t AudioOutput::write(const float* data, size_t count) {
     size_t written = 0;
+    bool watchdogArmed = exclusive_;
+    auto firstBlockedAt = std::chrono::steady_clock::now();
+    bool blockedBefore = false;
+
     while (written < count && !ring_.aborted()) {
         written += ring_.write(data + written, count - written);
-        if (written < count) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        if (written >= count) break;
+
+        if (!blockedBefore) {
+            blockedBefore = true;
+            firstBlockedAt = std::chrono::steady_clock::now();
         }
+
+        // Watchdog for the never-drains zombie stream: if we are blocked
+        // because the ring is full yet the callback consumes nothing,
+        // the stream is dead — recover to shared mode.
+        if (watchdogArmed && !paused_.load()) {
+            const auto blockedFor = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - firstBlockedAt).count();
+            if (blockedFor > 400) {
+                const uint64_t before = consumedFrames_.load();
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                if (consumedFrames_.load() == before) {
+                    if (!recoverShared()) return written;
+                    watchdogArmed = false;
+                    continue;
+                }
+                watchdogArmed = false;
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return written;
 }

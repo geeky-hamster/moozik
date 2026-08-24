@@ -21,9 +21,14 @@ import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -77,12 +82,40 @@ fun SettingsScreen(
                     Text("Audio output", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Moozik opens each stream at the track's native sample rate and tries " +
-                            "exclusive (mixer-bypassing) access first, falling back to shared mode. " +
-                            "The Now Playing screen shows the live mode.",
+                        "Moozik opens each stream at the track's native sample rate. " +
+                            "The Now Playing screen shows the live mode and rate.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Spacer(Modifier.height(8.dp))
+
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    val prefs = remember {
+                        context.getSharedPreferences("moozik_audio", android.content.Context.MODE_PRIVATE)
+                    }
+                    var exclusive by remember { mutableStateOf(prefs.getBoolean("exclusive", false)) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Exclusive DAC access", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Experimental: bypasses the system mixer. " +
+                                    "Some devices accept it but stay silent.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = exclusive,
+                            onCheckedChange = {
+                                exclusive = it
+                                prefs.edit().putBoolean("exclusive", it).apply()
+                            },
+                        )
+                    }
                     if (outputSummary.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
                         Text(
