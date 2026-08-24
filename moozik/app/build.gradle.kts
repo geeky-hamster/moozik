@@ -12,8 +12,8 @@ android {
         applicationId = "com.moozik.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -42,6 +42,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Debug-signed so the release APK is directly installable for testing.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
