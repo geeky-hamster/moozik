@@ -1,3 +1,4 @@
+#include "audio_output.h"
 #include "dsp_engine.h"
 
 #include <cmath>
@@ -7,6 +8,8 @@
 #define JNI_METHOD(name) Java_com_moozik_player_audio_Dsp_##name
 
 using namespace moozik;
+
+static AudioOutput* g_output = nullptr;
 
 static jlong ptrToHandle(DspEngine* e) { return reinterpret_cast<jlong>(e); }
 static DspEngine* handleToPtr(jlong h) { return reinterpret_cast<DspEngine*>(h); }
@@ -93,6 +96,44 @@ JNIEXPORT void JNI_METHOD(process)(
     if (data) {
         e->processInterleaved(data, frames);
         env->ReleasePrimitiveArrayCritical(interleaved, data, 0);
+    }
+}
+
+// ---- output backend (single instance) ----
+
+JNIEXPORT jboolean JNI_METHOD(openOutput)(JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jint sampleRate) {
+    auto* engine = handleToPtr(handle);
+    if (!engine || sampleRate <= 0) return JNI_FALSE;
+
+    delete g_output;
+    g_output = new AudioOutput();
+    return g_output->open(engine, sampleRate) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNI_METHOD(closeOutput)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    delete g_output;
+    g_output = nullptr;
+}
+
+JNIEXPORT void JNI_METHOD(setOutputPaused)(JNIEnv* /*env*/, jobject /*thiz*/, jboolean paused) {
+    if (g_output) g_output->setPaused(paused == JNI_TRUE);
+}
+
+JNIEXPORT void JNI_METHOD(drainOutput)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    if (g_output) g_output->clearRing();
+}
+
+JNIEXPORT void JNI_METHOD(writeOutput)(
+        JNIEnv* env, jobject /*thiz*/, jfloatArray interleaved, jint frames) {
+    if (!g_output || !interleaved || frames <= 0) return;
+
+    jsize length = env->GetArrayLength(interleaved);
+    if (frames * 2 > length) return;
+
+    auto* data = static_cast<jfloat*>(env->GetPrimitiveArrayCritical(interleaved, nullptr));
+    if (data) {
+        g_output->write(data, static_cast<size_t>(frames) * 2);
+        env->ReleasePrimitiveArrayCritical(interleaved, data, JNI_ABORT);
     }
 }
 

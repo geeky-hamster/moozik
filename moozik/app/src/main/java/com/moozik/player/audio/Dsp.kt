@@ -45,4 +45,11 @@ object Dsp {
 
     external fun reset(handle: Long)
     external fun process(handle: Long, interleaved: FloatArray, frames: Int)
+
+    // Output backend (single instance)
+    external fun openOutput(handle: Long, sampleRate: Int): Boolean
+    external fun closeOutput()
+    external fun setOutputPaused(paused: Boolean)
+    external fun drainOutput()
+    external fun writeOutput(interleaved: FloatArray, frames: Int)
 }
