@@ -1,8 +1,15 @@
 package com.moozik.player.audio
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.Uri
 import java.util.concurrent.atomic.AtomicLong
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +38,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         val artist: String = "",
         val album: String = "",
         val artUri: String? = null,
+        val currentUri: String? = null,
         val sampleRate: Int = 0,
         val durationMs: Long = 0L,
         val queueIndex: Int = -1,
@@ -42,6 +50,78 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
+
+    // ---- audio focus & device-change handling ----
+    private val audioManager =
+        appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val focusAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+        .build()
+
+    @Volatile private var resumeAfterFocusGain = false
+
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                resumeAfterFocusLoss = false
+                pauseForFocus()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
+            -> {
+                resumeAfterFocusLoss = _state.value.status == Status.PLAYING
+                pauseForFocus()
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (resumeAfterFocusLoss) {
+                    resumeAfterFocusLoss = false
+                    resumeFromFocus()
+                }
+            }
+        }
+    }
+
+    @Volatile private var resumeAfterFocusLoss = false
+
+    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        .setAudioAttributes(focusAttributes)
+        .setOnAudioFocusChangeListener(focusListener)
+        .setWillPauseWhenDucked(true)
+        .build()
+
+    private val becomingNoisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            // Headphones unplugged: pause instead of blasting the speaker.
+            pauseForFocus()
+            resumeAfterFocusLoss = false
+        }
+    }
+
+    init {
+        ContextCompat.registerReceiver(
+            appContext,
+            becomingNoisyReceiver,
+            IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    private fun pauseForFocus() {
+        if (_state.value.status == Status.PLAYING) togglePause()
+    }
+
+    private fun resumeFromFocus() {
+        if (_state.value.status == Status.PAUSED) togglePause()
+    }
+
+    private fun requestFocus(): Boolean =
+        audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+
+    private fun abandonFocus() {
+        runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
+        resumeAfterFocusLoss = false
+    }
 
     private var queue: List<PlayerTrack> = emptyList()
     private var job: Job? = null
@@ -58,6 +138,12 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         if (tracks.isEmpty()) return
         val myGen = generation.incrementAndGet()
         job?.cancel()
+
+        abandonFocus()
+        if (!requestFocus()) {
+            _state.value = PlayerState(error = "audio focus unavailable")
+            return
+        }
 
         queue = tracks
         paused = false
@@ -76,6 +162,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                         it.copy(
                             status = Status.PREPARING, title = track.title,
                             artist = track.artist, album = track.album, artUri = track.artUri,
+                            currentUri = track.uri,
                             queueIndex = idx, queueSize = tracks.size, error = null,
                         )
                     }
@@ -124,6 +211,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
 
             if (generation.get() == myGen) {
                 stopAudio()
+                abandonFocus()
                 _state.update { it.copy(status = Status.IDLE, error = failure) }
             }
         }
@@ -175,12 +263,14 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         paused = false
         positionMs = 0
         stopAudio()
+        abandonFocus()
         _state.update { it.copy(status = Status.IDLE) }
     }
 
     fun destroy() {
         stop()
         scope.cancel()
+        runCatching { appContext.unregisterReceiver(becomingNoisyReceiver) }
     }
 
     private fun stopAudio() {

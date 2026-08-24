@@ -12,8 +12,8 @@ android {
         applicationId = "com.moozik.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -72,6 +72,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.icons)
     implementation(libs.androidx.media)
     implementation(libs.coil.compose)
     debugImplementation(libs.androidx.ui.tooling)
