@@ -174,6 +174,8 @@ private fun MoozikApp(themeMode: ThemeMode, onThemeMode: (ThemeMode) -> Unit) {
                 onThemeMode = onThemeMode,
                 outputSummary = Dsp.outputInfo(),
                 modifier = Modifier.padding(padding),
+                onSleepTimer = { minutes -> player.setSleepTimer(minutes) },
+                onSleepEndAtQuery = { player.state.value.sleepEndAt },
             )
         }
     }

@@ -14,17 +14,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +45,8 @@ fun SettingsScreen(
     onThemeMode: (ThemeMode) -> Unit,
     outputSummary: String,
     modifier: Modifier = Modifier,
+    onSleepTimer: (Int) -> Unit = {},
+    onSleepEndAtQuery: () -> Long = { 0L },
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -123,6 +129,33 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
                         )
+                    }
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Sleep timer", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    var sleepEndAt by remember { mutableStateOf(0L) }
+                    // Reflect live timer state on each visit to this screen.
+                    LaunchedEffect(Unit) { sleepEndAt = onSleepEndAtQuery() }
+                    val remaining = ((sleepEndAt - System.currentTimeMillis()) / 60000L).coerceAtLeast(0)
+                    Text(
+                        if (sleepEndAt > 0) "stops in ~$remaining min" else "playback continues until you stop it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(15, 30, 45, 60).forEach { m ->
+                            FilledTonalButton(onClick = { onSleepTimer(m); sleepEndAt = System.currentTimeMillis() + m * 60_000L }) {
+                                Text("$m")
+                            }
+                        }
+                        OutlinedButton(onClick = { onSleepTimer(0); sleepEndAt = 0L }) {
+                            Text("Off")
+                        }
                     }
                 }
             }

@@ -48,6 +48,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         val queueSize: Int = 0,
         val repeat: RepeatMode = RepeatMode.OFF,
         val shuffled: Boolean = false,
+        val sleepEndAt: Long = 0L,
         val error: String? = null,
     )
 
@@ -168,6 +169,10 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         job = scope.launch {
             var idx = startIndex.coerceIn(0, tracks.lastIndex)
             var failure: String? = null
+            // Gapless technique (ref: Intense Audio Player): keep the output
+            // stream alive across consecutive tracks of the same rate — only
+            // the decoder is swapped, eliminating the reopen gap entirely.
+            var streamRate = -1
 
             while (isActive && generation.get() == myGen && idx in tracks.indices) {
                 val track = tracks[idx]
@@ -191,15 +196,19 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                     // Authoritative metadata straight from the file.
                     enrichMetadata(track)
 
-                    engineHandle = Dsp.createEngine(info.sampleRate)
-                    Dsp.setExclusiveEnabled(audioPrefs.getBoolean("exclusive", false))
-                    val outOk = Dsp.openOutput(engineHandle, info.sampleRate)
-                    android.util.Log.i(
-                        "MoozikPlayer",
-                        "openOutput(${info.sampleRate}Hz)=$outOk info=${Dsp.outputInfo()}",
-                    )
-                    check(outOk) { "could not open audio output" }
-                    eq?.applyTo(engineHandle, info.sampleRate)
+                    if (engineHandle == 0L || streamRate != info.sampleRate) {
+                        stopAudio()
+                        engineHandle = Dsp.createEngine(info.sampleRate)
+                        Dsp.setExclusiveEnabled(audioPrefs.getBoolean("exclusive", false))
+                        val outOk = Dsp.openOutput(engineHandle, info.sampleRate)
+                        android.util.Log.i(
+                            "MoozikPlayer",
+                            "openOutput(${info.sampleRate}Hz)=$outOk info=${Dsp.outputInfo()}",
+                        )
+                        check(outOk) { "could not open audio output" }
+                        eq?.applyTo(engineHandle, info.sampleRate)
+                        streamRate = info.sampleRate
+                    }
 
                     _state.update {
                         it.copy(
@@ -231,8 +240,11 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                     if (!eos) break
 
                     // Natural end -> apply repeat policy, then advance.
-                    stopAudio()
+                    // Stream stays open for the next track (gapless when same rate);
+                    // its buffered tail keeps playing while the next decoder spins up.
                     positionMs = 0
+                    framesSinceSeek = 0
+                    seekBaseMs = 0
                     idx = when (_state.value.repeat) {
                         RepeatMode.ONE -> idx
                         RepeatMode.ALL -> (idx + 1) % tracks.size
@@ -246,7 +258,6 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                     break
                 } finally {
                     decoder?.release()
-                    if (generation.get() == myGen) stopAudio()
                 }
             }
 
@@ -358,6 +369,28 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         stop()
         scope.cancel()
         runCatching { appContext.unregisterReceiver(becomingNoisyReceiver) }
+    }
+
+    // ---- sleep timer ----
+
+    private var sleepJob: Job? = null
+
+    /** Minutes <= 0 cancels the timer. Pauses playback when it elapses. */
+    fun setSleepTimer(minutes: Int) {
+        sleepJob?.cancel()
+        if (minutes <= 0) {
+            _state.update { it.copy(sleepEndAt = 0L) }
+            return
+        }
+        val endAt = System.currentTimeMillis() + minutes * 60_000L
+        _state.update { it.copy(sleepEndAt = endAt) }
+        sleepJob = scope.launch {
+            kotlinx.coroutines.delay(minutes * 60_000L)
+            if (isActive && generation.get() >= 0) {
+                pauseForFocus()
+                _state.update { it.copy(sleepEndAt = 0L) }
+            }
+        }
     }
 
     private fun stopAudio() {
