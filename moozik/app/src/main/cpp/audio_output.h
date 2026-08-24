@@ -26,8 +26,11 @@ public:
     void setPaused(bool paused) { paused_.store(paused, std::memory_order_relaxed); }
 
     int32_t framesPerBurst() const;
+    int actualSampleRate() const;
+    const char* modeText() const { return exclusive_ ? "exclusive" : "shared"; }
 
 private:
+    bool openWithMode(DspEngine* engine, int sampleRate, aaudio_sharing_mode_t mode);
     static aaudio_data_callback_result_t onDataCallback(
         AAudioStream* stream, void* userData, void* audioData, int32_t numFrames);
 
@@ -40,6 +43,7 @@ private:
     RingBuffer ring_;
     AAudioStream* stream_{nullptr};
     std::atomic<bool> paused_{false};
+    bool exclusive_{false};
 };
 
 } // namespace moozik

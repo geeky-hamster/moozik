@@ -105,6 +105,10 @@ private fun PlayerScreen() {
         positionMs = player.positionMs()
     }
 
+    val outputInfo = remember(state.status) {
+        if (state.status != MoozikPlayer.Status.IDLE) Dsp.outputInfo() else ""
+    }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { player.play(it, queryTitle(context, it)) }
     }
@@ -154,7 +158,7 @@ private fun PlayerScreen() {
                     MoozikPlayer.Status.IDLE ->
                         if (selfTest.startsWith("PASS")) "ready" else selfTest.lineSequence().firstOrNull() ?: ""
                     MoozikPlayer.Status.PREPARING -> "loading"
-                    MoozikPlayer.Status.PLAYING -> "${state.sampleRate / 1000} kHz · aaudio · float"
+                    MoozikPlayer.Status.PLAYING -> outputInfo
                     MoozikPlayer.Status.PAUSED -> "paused"
                 },
                 color = Sub,

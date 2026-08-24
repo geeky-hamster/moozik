@@ -55,4 +55,7 @@ object Dsp {
     external fun setOutputPaused(paused: Boolean)
     external fun drainOutput()
     external fun writeOutput(interleaved: FloatArray, frames: Int)
+
+    /** "exclusive · 48000 Hz" style summary of the live output; "" when closed. */
+    external fun outputInfo(): String
 }

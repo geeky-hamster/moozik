@@ -42,6 +42,26 @@ bool AudioOutput::open(DspEngine* engine, int sampleRate) {
     dsp_ = engine;
     ring_.resetAbort();
 
+    // Attempt 1: exclusive (MMAP where available) bypasses the system mixer.
+    if (openWithMode(engine, sampleRate, AAUDIO_SHARING_MODE_EXCLUSIVE)) {
+        exclusive_ = true;
+        LOGI("stream opened EXCLUSIVE: %d Hz, burst=%d",
+             AAudioStream_getSampleRate(stream_), AAudioStream_getFramesPerBurst(stream_));
+        return true;
+    }
+
+    // Attempt 2: shared mode — works everywhere.
+    if (openWithMode(engine, sampleRate, AAUDIO_SHARING_MODE_SHARED)) {
+        exclusive_ = false;
+        LOGI("stream opened SHARED: %d Hz, burst=%d",
+             AAudioStream_getSampleRate(stream_), AAudioStream_getFramesPerBurst(stream_));
+        return true;
+    }
+
+    return false;
+}
+
+bool AudioOutput::openWithMode(DspEngine* /*engine*/, int sampleRate, aaudio_sharing_mode_t mode) {
     AAudioStreamBuilder* builder = nullptr;
     if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK) {
         LOGE("builder creation failed");
@@ -49,7 +69,7 @@ bool AudioOutput::open(DspEngine* engine, int sampleRate) {
     }
 
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
-    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+    AAudioStreamBuilder_setSharingMode(builder, mode);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setChannelCount(builder, 2);
     AAudioStreamBuilder_setSampleRate(builder, sampleRate);
@@ -58,28 +78,19 @@ bool AudioOutput::open(DspEngine* engine, int sampleRate) {
     AAudioStreamBuilder_setDataCallback(builder, &AudioOutput::onDataCallback, this);
     AAudioStreamBuilder_setErrorCallback(builder, &AudioOutput::onErrorCallback, this);
 
-    const aaudio_result_t result = AAudioStreamBuilder_openStream(builder, &stream_);
-    if (result != AAUDIO_OK) {
-        LOGE("openStream failed: %s", AAudio_convertResultToText(result));
-        AAudioStreamBuilder_delete(builder);
-        stream_ = nullptr;
-        return false;
-    }
-
-    LOGI("stream opened: %d Hz, burst=%d, capacity=%d",
-         AAudioStream_getSampleRate(stream_),
-         AAudioStream_getFramesPerBurst(stream_),
-         AAudioStream_getBufferCapacityInFrames(stream_));
-
-    if (AAudioStream_requestStart(stream_) != AAUDIO_OK) {
-        LOGE("requestStart failed");
+    aaudio_result_t result = AAudioStreamBuilder_openStream(builder, &stream_);
+    if (result == AAUDIO_OK && AAudioStream_requestStart(stream_) != AAUDIO_OK) {
+        LOGE("requestStart failed in %s mode", mode == AAUDIO_SHARING_MODE_EXCLUSIVE ? "exclusive" : "shared");
         AAudioStream_close(stream_);
         stream_ = nullptr;
-        AAudioStreamBuilder_delete(builder);
+        result = AAUDIO_ERROR_INTERNAL;
+    }
+    AAudioStreamBuilder_delete(builder);
+
+    if (result != AAUDIO_OK) {
+        stream_ = nullptr;
         return false;
     }
-
-    AAudioStreamBuilder_delete(builder);
     return true;
 }
 
@@ -112,6 +123,10 @@ void AudioOutput::clearRing() {
 
 int32_t AudioOutput::framesPerBurst() const {
     return stream_ ? AAudioStream_getFramesPerBurst(stream_) : 0;
+}
+
+int AudioOutput::actualSampleRate() const {
+    return stream_ ? AAudioStream_getSampleRate(stream_) : 0;
 }
 
 } // namespace moozik

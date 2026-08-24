@@ -2,6 +2,7 @@
 #include "dsp_engine.h"
 
 #include <cmath>
+#include <cstdio>
 #include <jni.h>
 #include <new>
 
@@ -135,6 +136,16 @@ JNIEXPORT void JNI_METHOD(writeOutput)(
         g_output->write(data, static_cast<size_t>(frames) * 2);
         env->ReleasePrimitiveArrayCritical(interleaved, data, JNI_ABORT);
     }
+}
+
+JNIEXPORT jstring JNI_METHOD(outputInfo)(JNIEnv* env, jobject /*thiz*/) {
+    if (!g_output || !g_output->isOpen()) {
+        return env->NewStringUTF("");
+    }
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "%s · %d Hz",
+                  g_output->modeText(), g_output->actualSampleRate());
+    return env->NewStringUTF(buf);
 }
 
 } // extern "C"
