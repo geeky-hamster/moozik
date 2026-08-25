@@ -32,6 +32,8 @@ class PlaybackService : Service() {
         const val ACTION_STOP = "com.moozik.action.STOP"
         const val ACTION_NEXT = "com.moozik.action.NEXT"
         const val ACTION_PREV = "com.moozik.action.PREV"
+        const val ACTION_PLAY_INDEX = "com.moozik.action.PLAY_INDEX"
+        const val EXTRA_INDEX = "index"
 
         private const val CHANNEL_ID = "moozik_playback"
         private const val NOTIFICATION_ID = 42
@@ -73,12 +75,24 @@ class PlaybackService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
-        if (action == null) {
-            // Launched for playback (from the library): promote immediately
-            // to satisfy foreground-service start requirements.
+        if (action == null || action == ACTION_PLAY_INDEX) {
+            // Launched for playback (from the library or an external trigger):
+            // promote immediately to satisfy foreground-service requirements.
             startAsForeground(
                 buildNotification(PlayerBox.player?.state?.value ?: MoozikPlayer.PlayerState()),
             )
+            if (action == ACTION_PLAY_INDEX) {
+                val index = intent?.getIntExtra(EXTRA_INDEX, 0) ?: 0
+                scope.launch {
+                    val tracks = com.moozik.player.ui.loadLibrary(this@PlaybackService)
+                    if (tracks.isNotEmpty()) {
+                        PlayerBox.player?.playQueue(
+                            tracks,
+                            index.coerceIn(0, tracks.lastIndex),
+                        )
+                    }
+                }
+            }
         } else {
             when (action) {
                 ACTION_TOGGLE -> PlayerBox.player?.togglePause()
@@ -173,13 +187,20 @@ class PlaybackService : Service() {
     }
 
     private fun startAsForeground(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        // Android 12+ throws ForegroundServiceStartNotAllowedException when
+        // the start originates from the background (e.g. widget/service
+        // restart races). Playback must survive without the promotion.
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        }.onFailure {
+            android.util.Log.w("MoozikPlayer", "foreground promotion skipped: ${it.message}")
         }
     }
 

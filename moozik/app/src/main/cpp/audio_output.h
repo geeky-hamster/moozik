@@ -66,6 +66,9 @@ private:
     bool nativeRate_{true};
     int requestedRate_{0};
     std::atomic<uint64_t> consumedFrames_{0};
+    // Diagnostics
+    std::atomic<uint64_t> callbackCount_{0};
+    std::atomic<bool> callbackSeen_{false};
 
     static inline std::atomic<bool> s_exclusiveAllowed_{true};
     static inline std::atomic<bool> s_exclusiveBroken_{false};

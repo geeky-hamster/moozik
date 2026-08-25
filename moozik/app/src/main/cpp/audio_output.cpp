@@ -2,6 +2,7 @@
 
 #include <android/log.h>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <thread>
 
@@ -17,6 +18,11 @@ aaudio_data_callback_result_t AudioOutput::onDataCallback(
     auto* self = static_cast<AudioOutput*>(userData);
     auto* out = static_cast<float*>(audioData);
 
+    const uint64_t cb = self->callbackCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (!self->callbackSeen_.exchange(true)) {
+        LOGI("callback ALIVE: first fire numFrames=%d", numFrames);
+    }
+
     const size_t want = static_cast<size_t>(numFrames) * 2;
     if (self->paused_.load(std::memory_order_relaxed)) {
         std::memset(out, 0, want * sizeof(float));
@@ -28,6 +34,17 @@ aaudio_data_callback_result_t AudioOutput::onDataCallback(
         self->consumedFrames_.fetch_add(got / 2, std::memory_order_relaxed);
         if (self->dsp_) {
             self->dsp_->processInterleaved(out, static_cast<int>(got / 2));
+        }
+        // Peak metering: distinguishes "silence flowing" from "no flow".
+        if ((cb & 0x7F) == 0) {
+            float peak = 0.0f;
+            for (size_t i = 0; i < got; ++i) {
+                const float a = std::fabs(out[i]);
+                if (a > peak) peak = a;
+            }
+            LOGI("cb#%llu peak=%.4f ring=%zu framesRead=%lld",
+                 (unsigned long long)cb, peak, self->ring_.size(),
+                 (long long)self->framesRead());
         }
     }
     if (got < want) {
@@ -74,9 +91,16 @@ bool AudioOutput::open(DspEngine* engine, int sampleRate) {
             exclusive_ = (a.mode == AAUDIO_SHARING_MODE_EXCLUSIVE);
             nativeRate_ = a.native;
             consumedFrames_.store(0);
-            LOGI("opened %s %d Hz (native=%d, requested=%d)",
+            callbackSeen_.store(false);
+            callbackCount_.store(0);
+            LOGI("opened %s %d Hz dev=%d perf=%d burst=%d cap=%d (native=%d, requested=%d)",
                  exclusive_ ? "EXCLUSIVE" : "SHARED",
-                 AAudioStream_getSampleRate(stream_), a.native, sampleRate);
+                 AAudioStream_getSampleRate(stream_),
+                 AAudioStream_getDeviceId(stream_),
+                 AAudioStream_getPerformanceMode(stream_),
+                 AAudioStream_getFramesPerBurst(stream_),
+                 AAudioStream_getBufferCapacityInFrames(stream_),
+                 a.native, sampleRate);
             return true;
         }
         LOGW("open failed: mode=%s rate=%d",
