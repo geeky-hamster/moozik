@@ -4,6 +4,23 @@
 
 namespace moozik {
 
+namespace {
+
+// Transparent below the knee; gracefully flattens EQ/preamp boosts instead
+// of hard-clipping the DAC (ref: dynamics limiting in reference engines).
+inline float softLimit(float x) {
+    constexpr float knee = 0.92f;
+    constexpr float head = 1.0f - knee;
+    if (x > knee) {
+        x = knee + head * std::tanh((x - knee) / head);
+    } else if (x < -knee) {
+        x = -knee + head * std::tanh((x + knee) / head);
+    }
+    return x;
+}
+
+} // namespace
+
 DspEngine::DspEngine(int sampleRate) : sampleRate_(sampleRate) {
     reset();
 }
@@ -57,7 +74,7 @@ void DspEngine::processInterleaved(float* data, int frames) {
             for (auto& biquad : bands_[ch]) {
                 sample = biquad.process(sample);
             }
-            data[frame * kChannels + ch] = sample;
+            data[frame * kChannels + ch] = softLimit(sample);
         }
     }
 }

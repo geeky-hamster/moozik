@@ -156,4 +156,17 @@ JNIEXPORT void JNI_METHOD(setExclusiveEnabled)(JNIEnv* /*env*/, jobject /*thiz*/
     AudioOutput::setExclusiveAllowed(enabled == JNI_TRUE);
 }
 
+JNIEXPORT jlong JNI_METHOD(outputFramesRead)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return g_output ? g_output->framesRead() : -1L;
+}
+
+/// Closes the output only after its buffered tail has rendered (bounded wait),
+/// so song endings are not clipped on transitions.
+JNIEXPORT void JNI_METHOD(closeOutputDrained)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    if (!g_output) return;
+    g_output->waitDrained(600);
+    delete g_output;
+    g_output = nullptr;
+}
+
 } // extern "C"

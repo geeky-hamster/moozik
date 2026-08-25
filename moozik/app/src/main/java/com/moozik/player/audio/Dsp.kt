@@ -52,6 +52,7 @@ object Dsp {
     // Output backend (single instance)
     external fun openOutput(handle: Long, sampleRate: Int): Boolean
     external fun closeOutput()
+    external fun closeOutputDrained()
     external fun setOutputPaused(paused: Boolean)
     external fun drainOutput()
     external fun writeOutput(interleaved: FloatArray, frames: Int)
@@ -61,4 +62,7 @@ object Dsp {
 
     /** Opt-in switch for exclusive (mixer-bypassing) output attempts. */
     external fun setExclusiveEnabled(enabled: Boolean)
+
+    /** Hardware-consumed frames of the live stream; -1 when closed. */
+    external fun outputFramesRead(): Long
 }

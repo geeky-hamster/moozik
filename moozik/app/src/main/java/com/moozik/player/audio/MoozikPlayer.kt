@@ -70,8 +70,23 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
     @Volatile private var posSampleRate = 0
     @Volatile private var framesSinceSeek = 0L
     @Volatile private var seekBaseMs = 0L
+    // Hardware anchor: framesRead at the last (re)start/seek. The live UI
+    // position derives from what the stream has actually consumed.
+    @Volatile private var readBase = 0L
 
-    fun positionMs(): Long = positionMs
+    fun positionMs(): Long {
+        val sr = posSampleRate
+        if (sr <= 0) return positionMs
+        val read = Dsp.outputFramesRead()
+        if (read > 0) {
+            return seekBaseMs + (read - readBase) * 1000 / sr
+        }
+        return positionMs
+    }
+
+    private fun reanchorRead() {
+        readBase = Dsp.outputFramesRead().coerceAtLeast(0)
+    }
 
     private val audioPrefs by lazy {
         appContext.getSharedPreferences("moozik_audio", Context.MODE_PRIVATE)
@@ -208,6 +223,7 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
                         check(outOk) { "could not open audio output" }
                         eq?.applyTo(engineHandle, info.sampleRate)
                         streamRate = info.sampleRate
+                        reanchorRead()
                     }
 
                     _state.update {
@@ -329,6 +345,12 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         seekBaseMs = positionMs
         framesSinceSeek = 0
         pendingSeekUs.set(positionMs * 1000)
+        // Re-anchor the hardware counter AFTER the flush lands, so the delta
+        // maps to post-seek audio. The drain in decodeLoop gives us the gap.
+        Thread {
+            Thread.sleep(120) // > ring drain + codec flush window
+            reanchorRead()
+        }.start()
     }
 
     fun next() {
@@ -394,7 +416,9 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
     }
 
     private fun stopAudio() {
-        Dsp.closeOutput()
+        // Drained close: let the buffered tail finish rendering (≤600ms)
+        // so song endings are not clipped on transitions.
+        Dsp.closeOutputDrained()
         if (engineHandle != 0L) {
             Dsp.destroyEngine(engineHandle)
             engineHandle = 0L

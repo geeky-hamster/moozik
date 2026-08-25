@@ -32,6 +32,14 @@ class MediaDecoder(context: Context) {
     private var codec: MediaCodec? = null
     private var conv = FloatArray(16384)
 
+    // Gapless (ref: Symphonia-based players): MP3 streams carry encoder
+    // delay/padding — decoder-added silence at both ends that must be
+    // trimmed sample-exactly for gapless albums and honest durations.
+    private var gaplessDelayFrames = 0L
+    private var gaplessPaddingFrames = 0L
+    private var expectedFrames = 0L
+    private var trackSampleRate = 0
+
     fun open(uri: Uri): TrackInfo {
         extractor.setDataSource(appContext, uri, null)
         return openSelected()
@@ -61,6 +69,26 @@ class MediaDecoder(context: Context) {
             configure(format, null, null, 0)
             start()
         }
+
+        // LAME/Xing gapless metadata, surfaced by the platform extractor
+        // when present (MP3). Values are in sample frames.
+        gaplessDelayFrames = if (format.containsKey("encoder-delay")) {
+            runCatching { format.getInteger("encoder-delay").toLong() }.getOrDefault(0L)
+        } else 0L
+        gaplessPaddingFrames = if (format.containsKey("encoder-padding")) {
+            runCatching { format.getInteger("encoder-padding").toLong() }.getOrDefault(0L)
+        } else 0L
+
+        val sr = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        trackSampleRate = sr
+        val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
+            format.getLong(MediaFormat.KEY_DURATION)
+        } else 0L
+        expectedFrames = if (durationUs > 0) durationUs * sr / 1_000_000L else 0L
+        if (gaplessDelayFrames > 0 || gaplessPaddingFrames > 0) {
+            Log.i(TAG, "gapless: delay=$gaplessDelayFrames pad=$gaplessPaddingFrames expected=$expectedFrames")
+        }
+
         Log.i(
             TAG,
             "decoder ready: mime=$mime rate=${format.getInteger(MediaFormat.KEY_SAMPLE_RATE)} " +
@@ -96,6 +124,8 @@ class MediaDecoder(context: Context) {
         var sawEos = false
         var buffersOut = 0L
         var framesOut = 0L
+        var skipHead = gaplessDelayFrames
+        var emitted = 0L
         Log.i(TAG, "decode loop enter")
 
         while (!sawEos && isActive()) {
@@ -133,7 +163,7 @@ class MediaDecoder(context: Context) {
                 outIdx >= 0 -> {
                     val ob = checkNotNull(c.getOutputBuffer(outIdx))
                     ob.order(ByteOrder.nativeOrder())
-                    val frames: Int
+                    var frames: Int
                     when (pcmEncoding) {
                         AudioFormat.ENCODING_PCM_FLOAT -> {
                             frames = info.size / 4 / outChannels
@@ -144,14 +174,36 @@ class MediaDecoder(context: Context) {
                             stereoFromShort(ob, frames, outChannels)
                         }
                     }
-                    buffersOut++
-                    framesOut += frames
-                    if (buffersOut == 1L || buffersOut % 200L == 0L) {
-                        Log.i(TAG, "out #$buffersOut frames=$frames total=$framesOut pts=${info.presentationTimeUs} enc=$pcmEncoding")
+
+                    // --- gapless trimming ---
+                    if (skipHead > 0 && frames > 0) {
+                        val cut = minOf(skipHead, frames.toLong()).toInt()
+                        skipHead -= cut
+                        frames -= cut
+                        if (frames > 0) {
+                            System.arraycopy(conv, cut * 2, conv, 0, frames * 2)
+                        }
                     }
-                    if (frames > 0) sink(conv, frames, info.presentationTimeUs)
+                    if (expectedFrames > 0 && emitted + frames > expectedFrames) {
+                        frames = (expectedFrames - emitted).toInt().coerceAtLeast(0)
+                    }
+
+                    buffersOut++
+                    if (frames > 0) {
+                        emitted += frames
+                        framesOut += frames
+                        if (buffersOut == 1L || buffersOut % 200L == 0L) {
+                            Log.i(TAG, "out #$buffersOut frames=$frames total=$framesOut pts=${info.presentationTimeUs} enc=$pcmEncoding")
+                        }
+                        sink(conv, frames, info.presentationTimeUs)
+                    }
                     c.releaseOutputBuffer(outIdx, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+
+                    if (expectedFrames > 0 && emitted >= expectedFrames) {
+                        // Real audio exhausted; remaining codec output is padding.
+                        sawEos = true
+                        Log.i(TAG, "gapless EOS after $emitted frames (padding skipped)")
+                    } else if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         sawEos = true
                         Log.i(TAG, "EOS after $buffersOut buffers, $framesOut frames")
                     }

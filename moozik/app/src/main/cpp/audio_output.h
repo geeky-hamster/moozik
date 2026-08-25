@@ -30,6 +30,12 @@ public:
     int actualSampleRate() const;
     bool isNativeRate() const { return nativeRate_; }
     const char* modeText() const { return exclusive_ ? "exclusive" : "shared"; }
+    /// Hardware-anchored playback position (frames consumed by the stream).
+    int64_t framesRead() const {
+        return stream_ ? AAudioStream_getFramesRead(stream_) : -1;
+    }
+    /// Blocks until the ring is empty (bounded) — preserves song tails.
+    void waitDrained(int timeoutMs);
 
     // Global switches (process-wide, driven from Kotlin prefs).
     static void setExclusiveAllowed(bool allowed) { s_exclusiveAllowed_.store(allowed); }

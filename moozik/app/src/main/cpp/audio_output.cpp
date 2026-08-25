@@ -199,4 +199,15 @@ int AudioOutput::actualSampleRate() const {
     return stream_ ? AAudioStream_getSampleRate(stream_) : 0;
 }
 
+void AudioOutput::waitDrained(int timeoutMs) {
+    const auto start = std::chrono::steady_clock::now();
+    while (ring_.size() > 0) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count() > timeoutMs) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
 } // namespace moozik
