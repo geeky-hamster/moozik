@@ -205,6 +205,10 @@ fun NowPlayingSheet(player: MoozikPlayer, onDismiss: () -> Unit) {
                 )
             }
 
+            // ---- Synced lyrics ----
+            Spacer(Modifier.height(20.dp))
+            LyricsPanel(player = player, positionMs = position)
+
             // ---- Up Next ----
             if (upcoming.isNotEmpty()) {
                 Spacer(Modifier.height(20.dp))
