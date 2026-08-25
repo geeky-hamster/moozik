@@ -106,14 +106,15 @@ JNIEXPORT jboolean JNI_METHOD(openOutput)(JNIEnv* /*env*/, jobject /*thiz*/, jlo
     auto* engine = handleToPtr(handle);
     if (!engine || sampleRate <= 0) return JNI_FALSE;
 
-    delete g_output;
-    g_output = new AudioOutput();
+    // The AudioOutput object persists for the process lifetime; open()
+    // closes any previous stream and reuses it (no delete = no use-after-free
+    // against concurrent position polls).
+    if (!g_output) g_output = new AudioOutput();
     return g_output->open(engine, sampleRate) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNI_METHOD(closeOutput)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    delete g_output;
-    g_output = nullptr;
+    if (g_output) g_output->closeStream();
 }
 
 JNIEXPORT void JNI_METHOD(setOutputPaused)(JNIEnv* /*env*/, jobject /*thiz*/, jboolean paused) {
@@ -160,13 +161,12 @@ JNIEXPORT jlong JNI_METHOD(outputFramesRead)(JNIEnv* /*env*/, jobject /*thiz*/) 
     return g_output ? g_output->framesRead() : -1L;
 }
 
-/// Closes the output only after its buffered tail has rendered (bounded wait),
-/// so song endings are not clipped on transitions.
+/// Closes the stream only after its buffered tail has rendered (bounded
+/// wait), so song endings are not clipped. The object stays alive.
 JNIEXPORT void JNI_METHOD(closeOutputDrained)(JNIEnv* /*env*/, jobject /*thiz*/) {
     if (!g_output) return;
     g_output->waitDrained(600);
-    delete g_output;
-    g_output = nullptr;
+    g_output->closeStream();
 }
 
 } // extern "C"

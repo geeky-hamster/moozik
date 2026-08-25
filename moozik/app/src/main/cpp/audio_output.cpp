@@ -37,15 +37,22 @@ aaudio_data_callback_result_t AudioOutput::onDataCallback(
 }
 
 void AudioOutput::onErrorCallback(
-        AAudioStream* /*stream*/, void* /*userData*/, aaudio_result_t error) {
-    LOGE("stream error: %s", AAudio_convertResultToText(error));
+        AAudioStream* /*stream*/, void* userData, aaudio_result_t error) {
+    // Stream died (routing change, policy kill, device swap). Flag it; the
+    // producer watchdog reopens and resumes — mirrors the reference engine's
+    // "reopen after interruption" behavior.
+    LOGE("stream error: %s - flagging for recovery", AAudio_convertResultToText(error));
+    auto* self = static_cast<AudioOutput*>(userData);
+    if (self) self->disconnected_.store(true, std::memory_order_release);
 }
 
 bool AudioOutput::open(DspEngine* engine, int sampleRate) {
-    close();
+    closeStream();
     dsp_ = engine;
     requestedRate_ = sampleRate;
+    ring_.abort();
     ring_.resetAbort();
+    disconnected_.store(false);
     consumedFrames_.store(0);
 
     // Fallback chain: guaranteed-sound first, bit-perfect attempt last.
@@ -78,14 +85,19 @@ bool AudioOutput::open(DspEngine* engine, int sampleRate) {
     return false;
 }
 
-// Watchdog recovery: the exclusive stream opened and "started" but the
-// hardware never consumes (seen on some ColorOS builds). Reopen in shared.
+// Watchdog recovery: the stream died (error callback / zombie). Reopen in
+// shared mode at the requested rate and resume — the decoder keeps feeding.
 bool AudioOutput::recoverShared() {
-    LOGW("exclusive stream not draining - recovering to SHARED");
+    if (disconnected_.load()) {
+        LOGW("stream disconnected - recovering to SHARED");
+    } else {
+        LOGW("stream not draining - recovering to SHARED");
+    }
     s_exclusiveBroken_.store(true);
     const bool wasNative = nativeRate_;
-    close();
+    closeStream();
     ring_.resetAbort();
+    disconnected_.store(false);
 
     if (openWithMode(dsp_, requestedRate_, AAUDIO_SHARING_MODE_SHARED)) {
         exclusive_ = false;
@@ -137,7 +149,7 @@ bool AudioOutput::openWithMode(DspEngine* /*engine*/, int sampleRate, aaudio_sha
     return true;
 }
 
-void AudioOutput::close() {
+void AudioOutput::closeStream() {
     if (!stream_) return;
 
     ring_.abort();
@@ -146,9 +158,12 @@ void AudioOutput::close() {
     stream_ = nullptr;
 }
 
+void AudioOutput::close() {
+    closeStream();
+}
+
 size_t AudioOutput::write(const float* data, size_t count) {
     size_t written = 0;
-    bool watchdogArmed = exclusive_;
     auto firstBlockedAt = std::chrono::steady_clock::now();
     bool blockedBefore = false;
 
@@ -161,21 +176,26 @@ size_t AudioOutput::write(const float* data, size_t count) {
             firstBlockedAt = std::chrono::steady_clock::now();
         }
 
-        // Watchdog for the never-drains zombie stream: if we are blocked
-        // because the ring is full yet the callback consumes nothing,
-        // the stream is dead — recover to shared mode.
-        if (watchdogArmed && !paused_.load()) {
+        // Watchdog (all modes): if the ring stays full because the callback
+        // stopped consuming — dead/disconnected stream — reopen and resume.
+        if (!paused_.load()) {
             const auto blockedFor = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - firstBlockedAt).count();
-            if (blockedFor > 400) {
+            const bool disconnected = disconnected_.load(std::memory_order_acquire);
+            if (disconnected || blockedFor > 500) {
+                if (disconnected) {
+                    if (!recoverShared()) return written;
+                    blockedBefore = false;
+                    continue;
+                }
                 const uint64_t before = consumedFrames_.load();
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 if (consumedFrames_.load() == before) {
                     if (!recoverShared()) return written;
-                    watchdogArmed = false;
+                    blockedBefore = false;
                     continue;
                 }
-                watchdogArmed = false;
+                firstBlockedAt = std::chrono::steady_clock::now(); // healthy again
             }
         }
 

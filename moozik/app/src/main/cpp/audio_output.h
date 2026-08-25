@@ -36,6 +36,9 @@ public:
     }
     /// Blocks until the ring is empty (bounded) — preserves song tails.
     void waitDrained(int timeoutMs);
+    /// Closes the AAudio stream but keeps the object (and its ring) alive
+    /// for reuse — avoids use-after-free against concurrent JNI pollers.
+    void closeStream();
 
     // Global switches (process-wide, driven from Kotlin prefs).
     static void setExclusiveAllowed(bool allowed) { s_exclusiveAllowed_.store(allowed); }
@@ -58,6 +61,7 @@ private:
     RingBuffer ring_;
     AAudioStream* stream_{nullptr};
     std::atomic<bool> paused_{false};
+    std::atomic<bool> disconnected_{false};
     bool exclusive_{false};
     bool nativeRate_{true};
     int requestedRate_{0};

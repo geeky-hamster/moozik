@@ -79,7 +79,13 @@ class MoozikPlayer(context: Context, private val eq: EqController? = null) {
         if (sr <= 0) return positionMs
         val read = Dsp.outputFramesRead()
         if (read > 0) {
-            return seekBaseMs + (read - readBase) * 1000 / sr
+            val delta = read - readBase
+            // Negative delta = stream was internally reopened (recovery) or
+            // switched; the hardware counter restarted — fall back to the
+            // decode-counted position until the next anchor.
+            if (delta >= 0) {
+                return seekBaseMs + delta * 1000 / sr
+            }
         }
         return positionMs
     }
