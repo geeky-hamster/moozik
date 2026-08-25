@@ -59,6 +59,7 @@ class PlaybackService : Service() {
         scope.launch {
             player.state.collect { s ->
                 updateSession(s)
+                MoozikWidgetProvider.push(this@PlaybackService, s)
                 if (s.status == MoozikPlayer.Status.IDLE && s.queueSize == 0) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
@@ -71,14 +72,26 @@ class PlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Promote to foreground immediately to satisfy FGS start requirements.
-        startAsForeground(buildNotification(PlayerBox.player?.state?.value ?: MoozikPlayer.PlayerState()))
-
-        when (intent?.action) {
-            ACTION_TOGGLE -> PlayerBox.player?.togglePause()
-            ACTION_STOP -> PlayerBox.player?.stop()
-            ACTION_NEXT -> PlayerBox.player?.next()
-            ACTION_PREV -> PlayerBox.player?.previous()
+        val action = intent?.action
+        if (action == null) {
+            // Launched for playback (from the library): promote immediately
+            // to satisfy foreground-service start requirements.
+            startAsForeground(
+                buildNotification(PlayerBox.player?.state?.value ?: MoozikPlayer.PlayerState()),
+            )
+        } else {
+            when (action) {
+                ACTION_TOGGLE -> PlayerBox.player?.togglePause()
+                ACTION_STOP -> PlayerBox.player?.stop()
+                ACTION_NEXT -> PlayerBox.player?.next()
+                ACTION_PREV -> PlayerBox.player?.previous()
+            }
+            val s = PlayerBox.player?.state?.value ?: MoozikPlayer.PlayerState()
+            if (s.status == MoozikPlayer.Status.IDLE && s.queueSize == 0) {
+                stopSelf()
+            } else {
+                startAsForeground(buildNotification(s))
+            }
         }
         return START_NOT_STICKY
     }
